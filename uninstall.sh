@@ -15,10 +15,15 @@ grep -Fq "$MARKER_START" "$CONFIG_FILE" || {
 backup="${CONFIG_FILE}.pre-uninstall.$(date +%Y%m%d_%H%M%S)"
 cp -a "$CONFIG_FILE" "$backup"
 tmp="$(mktemp)"
+# Toglie anche la riga vuota che install.sh aggiunge prima del blocco.
 awk -v start="$MARKER_START" -v end="$MARKER_END" '
-    $0 == start { skip=1; next }
+    $0 == start { skip=1; held=0; next }
     $0 == end { skip=0; next }
-    !skip { print }
+    skip { next }
+    held { print ""; held=0 }
+    $0 == "" { held=1; next }
+    { print }
+    END { if (held) print "" }
 ' "$CONFIG_FILE" > "$tmp"
 mv "$tmp" "$CONFIG_FILE"
 

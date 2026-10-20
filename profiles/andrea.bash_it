@@ -8,13 +8,12 @@ aliases directory
 aliases systemd
 
 # Completamento del sistema e degli strumenti che possono essere presenti.
+# gcloud e aliases sono esclusi perché rallentano l'avvio di oltre 2 secondi.
 completion system
 completion git
 completion bash-it
-completion aliases
 completion ssh
 completion kubectl
 completion helm
-completion gcloud
 completion github-cli
 

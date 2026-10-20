@@ -24,8 +24,11 @@ _andrea_alias_if_free() {
 
 # Cronologia utile, condivisa fra sessioni tramite le funzioni native di Bash-it,
 # ma senza creare un secondo archivio permanente con tutti i comandi.
-HISTSIZE="${HISTSIZE:-50000}"
-HISTFILESIZE="${HISTFILESIZE:-100000}"
+# Il .bashrc di Ubuntu imposta già HISTSIZE=1000 e HISTFILESIZE=2000 prima di
+# questo file, quindi i valori vanno forzati; si cambiano con ANDREA_HISTSIZE e
+# ANDREA_HISTFILESIZE.
+HISTSIZE="${ANDREA_HISTSIZE:-50000}"
+HISTFILESIZE="${ANDREA_HISTFILESIZE:-100000}"
 for _andrea_hist_flag in ignoreboth erasedups; do
     if [[ ":${HISTCONTROL:-}:" != *":${_andrea_hist_flag}:"* ]]; then
         HISTCONTROL="${HISTCONTROL:+${HISTCONTROL}:}${_andrea_hist_flag}"
@@ -76,7 +79,7 @@ _andrea_alias_if_free la 'ls -A'
 _andrea_alias_if_free l1 'ls -1'
 _andrea_alias_if_free e '${EDITOR:-vim}'
 _andrea_alias_if_free vbrc '${EDITOR:-vim} ~/.bashrc'
-_andrea_alias_if_free vba '${EDITOR:-vim} ~/.bash_it_andrea/custom/andrea/andrea.bash'
+_andrea_alias_if_free vba '${EDITOR:-vim} "${BASH_IT}/custom/andrea/andrea.bash"'
 
 # Alias Git volutamente limitati a operazioni di consultazione.
 _andrea_alias_if_free g 'git'
@@ -131,18 +134,26 @@ repeat() {
 }
 
 extract() {
-    local file="${1:-}"
-    [[ -f "$file" ]] || { printf "Archivio non trovato: %s\n" "$file" >&2; return 2; }
+    local file="${1:-}" tool
+    [[ -f "$file" ]] || { printf 'Archivio non trovato: %s\n' "$file" >&2; return 2; }
     case "$file" in
-        *.tar.*|*.tgz) _andrea_has tar && tar -xf -- "$file" || return 127 ;;
-        *.zip) _andrea_has unzip && unzip -- "$file" || return 127 ;;
-        *.7z) _andrea_has 7z && 7z x -- "$file" || return 127 ;;
-        *.rar) _andrea_has unrar && unrar x -- "$file" || return 127 ;;
-        *.gz) _andrea_has gunzip && gunzip -- "$file" || return 127 ;;
-        *.bz2) _andrea_has bunzip2 && bunzip2 -- "$file" || return 127 ;;
-        *.Z) _andrea_has uncompress && uncompress -- "$file" || return 127 ;;
+        *.tar|*.tar.*|*.tgz|*.tbz|*.tbz2|*.txz|*.tzst) tool=tar ;;
+        *.zip) tool=unzip ;;
+        *.7z) tool=7z ;;
+        *.rar) tool=unrar ;;
+        *.gz) tool=gunzip ;;
+        *.bz2) tool=bunzip2 ;;
+        *.xz) tool=unxz ;;
+        *.zst) tool=unzstd ;;
+        *.Z) tool=uncompress ;;
         *) printf 'Formato non gestito: %s\n' "$file" >&2; return 1 ;;
     esac
+    _andrea_has "$tool" || { printf 'Serve il programma %s.\n' "$tool" >&2; return 127; }
+    case "$tool" in
+        tar) tar -xf "$file" ;;
+        7z|unrar) "$tool" x -- "$file" ;;
+        *) "$tool" -- "$file" ;;
+    esac || { printf 'Estrazione non riuscita: %s\n' "$file" >&2; return 1; }
 }
 
 backup() {
@@ -281,6 +292,150 @@ adb-shell() {
 adb-logcat() {
     _andrea_has adb || { printf 'adb non è disponibile nel PATH.\n' >&2; return 127; }
     adb logcat "$@"
+}
+
+adb-wifi() {
+    _andrea_has adb || { printf 'adb non è disponibile nel PATH.\n' >&2; return 127; }
+    if [[ $# -gt 0 ]]; then
+        adb connect "$1"
+    elif _andrea_has redmi-wifi.sh; then
+        redmi-wifi.sh --just-connect
+    else
+        printf 'Uso: adb-wifi IP:PORTA\n' >&2
+        return 2
+    fi
+}
+
+adb-screenshot() {
+    _andrea_has adb || { printf 'adb non è disponibile nel PATH.\n' >&2; return 127; }
+    local file="${1:-screenshot-$(date +%Y%m%d_%H%M%S).png}"
+    adb exec-out screencap -p > "$file" && [[ -s "$file" ]] || {
+        printf 'Screenshot non riuscito.\n' >&2
+        rm -f -- "$file"
+        return 1
+    }
+    printf '%s\n' "$file"
+}
+
+# Sistema: servizi, log, spazio, GPU e audio.
+servizi() {
+    _andrea_has systemctl || { printf 'systemctl non è disponibile.\n' >&2; return 127; }
+    printf 'Servizi di sistema falliti:\n'
+    systemctl --failed --no-legend --plain
+    printf '\nServizi utente falliti:\n'
+    systemctl --user --failed --no-legend --plain
+    printf '\nProssimi timer utente:\n'
+    systemctl --user list-timers --no-pager | head -15
+}
+
+log-servizio() {
+    local scope='--user' unit=''
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --system) scope='--system' ;;
+            *) unit="$1" ;;
+        esac
+        shift
+    done
+    [[ -n "$unit" ]] || { printf 'Uso: log-servizio NOME [--system]\n' >&2; return 2; }
+    if [[ "$scope" == '--user' ]]; then
+        journalctl --user -u "$unit" -n 50 -f
+    else
+        journalctl -u "$unit" -n 50 -f
+    fi
+}
+
+porta() {
+    [[ "${1:-}" =~ ^[0-9]+$ ]] || { printf 'Uso: porta NUMERO\n' >&2; return 2; }
+    _andrea_has ss || { printf 'ss non è disponibile.\n' >&2; return 127; }
+    ss -tulpn "( sport = :$1 )"
+}
+
+spazio() {
+    df -h -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs 2>/dev/null
+}
+
+grandi() {
+    local dir="${1:-.}" count="${2:-15}"
+    du -xah --max-depth=1 -- "$dir" 2>/dev/null | sort -rh | head -n "$count"
+}
+
+gpu() {
+    _andrea_has nvidia-smi || { printf 'nvidia-smi non è disponibile.\n' >&2; return 127; }
+    nvidia-smi --query-gpu=name,driver_version,temperature.gpu,utilization.gpu,memory.used,memory.total \
+        --format=csv,noheader
+    nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>/dev/null
+}
+
+audio-info() {
+    _andrea_has pactl || { printf 'pactl non è disponibile.\n' >&2; return 127; }
+    printf 'Uscita predefinita:  %s\n' "$(pactl get-default-sink)"
+    printf 'Ingresso predefinito: %s\n' "$(pactl get-default-source)"
+    printf '\nUscite:\n'
+    pactl list short sinks
+    printf '\nIngressi:\n'
+    pactl list short sources | grep -v '\.monitor'
+}
+
+# Ricerca di file e testo.
+trova() {
+    [[ $# -gt 0 ]] || { printf 'Uso: trova NOME [directory]\n' >&2; return 2; }
+    find "${2:-.}" -iname "*$1*" -not -path '*/.git/*' 2>/dev/null
+}
+
+cerca() {
+    [[ $# -gt 0 ]] || { printf 'Uso: cerca TESTO [directory]\n' >&2; return 2; }
+    if _andrea_has rg; then
+        rg -n --smart-case -- "$1" "${2:-.}"
+    else
+        grep -rIn --exclude-dir=.git -i -- "$1" "${2:-.}"
+    fi
+}
+
+ultimi() {
+    local dir="${1:-.}" minutes="${2:-60}"
+    find "$dir" -xdev -type f -mmin "-${minutes}" -not -path '*/.git/*' -printf '%TY-%Tm-%Td %TH:%TM  %p\n' 2>/dev/null \
+        | sort -r | head -30
+}
+
+# Condivide la directory corrente via HTTP: solo su questo PC, salvo --lan.
+serve() {
+    local port=8000 bind=127.0.0.1
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --lan) bind=0.0.0.0 ;;
+            *) port="$1" ;;
+        esac
+        shift
+    done
+    _andrea_has python3 || { printf 'python3 non è disponibile.\n' >&2; return 127; }
+    printf 'http://%s:%s/  (Ctrl+C per fermare)\n' "$bind" "$port"
+    python3 -m http.server --bind "$bind" "$port"
+}
+
+# Elenco degli script personali con la prima riga di commento.
+miei-script() {
+    local dir="${1:-${HOME}/.local/bin}" file desc
+    for file in "$dir"/*; do
+        [[ -f "$file" && -x "$file" ]] || continue
+        desc="$(grep -m1 -E '^#[^!]' "$file" 2>/dev/null | sed -E 's/^#+[[:space:]]*//')"
+        printf '%-28s %s\n' "${file##*/}" "${desc:0:90}"
+    done
+}
+
+comandi() {
+    cat <<'TESTO'
+Andrea Bash — comandi personali
+
+Git (sola lettura)  g gs gss gd gds gl gb grv ghm, git-info, git-root
+File                extract, backup, mkcd, trova, cerca, ultimi, grandi, lsnew, dir-size
+Sistema             servizi, log-servizio, porta, spazio, gpu, audio-info, psgrep, path
+Rete                net-info, wifi-info, listen-ports, public-ip, serve [--lan]
+Android             adb-devices, adb-shell, adb-logcat, adb-wifi, adb-screenshot
+Kubernetes          k, kgp, kgs, kgn, kga, kctx, kns
+Appunti             clip-copy, clip-paste (pbcopy, pbpaste)
+Altro               repeat, miei-script, comandi
+TESTO
 }
 
 unset -f _andrea_alias_if_free _andrea_path_append
